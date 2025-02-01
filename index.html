@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Traefik Config Editor</title>
+
+    <link rel="stylesheet" href="/static/style.css">
+
+    <!-- CodeMirror for YAML Syntax Highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.14/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.14/theme/dracula.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.14/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.14/mode/yaml/yaml.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js"></script>
+</head>
+<body>
+    <h1>Traefik Config Editor</h1>
+
+    <button id="add-router">Add Router</button>
+    <button id="add-service">Add Service</button>
+    <button id="add-middleware">Add Middleware</button>
+    <button id="toggle-dark-mode">Toggle Dark Mode</button>
+
+    <div id="editor-container">
+        <textarea id="yaml"></textarea>
+    </div>
+
+    <button id="save-config">Save Config</button>
+
+    <div id="status"></div>
+
+    <h2>Backups</h2>
+    <ul id="backup-list"></ul>
+
+    <h2>Routers</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Rule</th>
+                <th>Entrypoints</th>
+                <th>Service</th>
+                <th>Middlewares</th>
+            </tr>
+        </thead>
+        <tbody id="routers-table"></tbody>
+    </table>
+
+    <h2>Services</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Load Balancer Servers</th>
+            </tr>
+        </thead>
+        <tbody id="services-table"></tbody>
+    </table>
+
+    <h2>Middlewares</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Type</th>
+            </tr>
+        </thead>
+        <tbody id="middlewares-table"></tbody>
+    </table>
+
+    <div class="sidebar" id="sidebar">
+        <h2 id="sidebar-title"></h2>
+        <label>Name:</label>
+        <input type="text" id="item-name">
+        <div id="extra-fields"></div>
+        <button onclick="saveItem()">Save</button>
+        <button onclick="toggleSidebar()">Cancel</button>
+    </div>
+
+    <script>
+        let editor, editingType = null;
+
+        function initializeEditor() {
+            editor = CodeMirror.fromTextArea(document.getElementById("yaml"), {
+                mode: "yaml",
+                lineNumbers: true,
+                theme: localStorage.getItem("theme") === "dark" ? "dracula" : "default"
+            });
+            applyTheme();
+            loadConfig();
+            loadBackups();
+        }
+
+        async function loadConfig() {
+            try {
+                const response = await fetch('/config');
+                if (!response.ok) {
+                    console.error("Failed to fetch config:", response.statusText);
+                    return;
+                }
+                const data = await response.json();
+                if (typeof data.yaml === "string") {
+                    editor.setValue(data.yaml);
+                } else {
+                    console.error("Invalid YAML response from backend.");
+                }
+                populateTables();
+            } catch (error) {
+                console.error("Error loading YAML:", error);
+            }
+        }
+
+        function applyTheme() {
+            if (localStorage.getItem("theme") === "dark") {
+                document.body.classList.add("dark-mode");
+                editor.setOption("theme", "dracula");
+            }
+        }
+
+        function toggleDarkMode() {
+            document.body.classList.toggle("dark-mode");
+            const isDark = document.body.classList.contains("dark-mode");
+            localStorage.setItem("theme", isDark ? "dark" : "light");
+            editor.setOption("theme", isDark ? "dracula" : "default");
+        }
+
+        function toggleSidebar(type = null) {
+            editingType = type;
+            document.getElementById("sidebar-title").innerText = `Add ${type}`;
+            document.getElementById("item-name").value = "";
+            document.getElementById("extra-fields").innerHTML = generateExtraFields(type);
+            document.getElementById("sidebar").classList.toggle("open");
+        }
+
+        function generateExtraFields(type) {
+            if (type === "router") {
+                return `
+                    <label>Rule:</label><input type="text" id="router-rule">
+                    <label>Service:</label><input type="text" id="router-service">
+                    <label>Entrypoints:</label><input type="text" id="router-entrypoints">
+                    <label>Middlewares:</label><input type="text" id="router-middlewares">
+                `;
+            }
+            if (type === "service") {
+                return `<label>Load Balancer URL:</label><input type="text" id="service-url">`;
+            }
+            if (type === "middleware") {
+                return `<label>Type:</label><input type="text" id="middleware-type">`;
+            }
+            return "";
+        }
+        
+
+        function saveItem() {
+            let yamlObj = jsyaml.load(editor.getValue()) || {};
+            let name = document.getElementById("item-name").value;
+        
+            if (editingType === "router") {
+                yamlObj.http = yamlObj.http || {};
+                yamlObj.http.routers = yamlObj.http.routers || {};
+                yamlObj.http.routers[name] = {
+                    rule: document.getElementById("router-rule").value,
+                    service: document.getElementById("router-service").value,
+                    entrypoints: document.getElementById("router-entrypoints").value.split(",").map(e => e.trim()),
+                    middlewares: document.getElementById("router-middlewares").value.split(",").map(m => m.trim()).filter(m => m !== "")
+                };
+            } else if (editingType === "service") {
+                yamlObj.http = yamlObj.http || {};
+                yamlObj.http.services = yamlObj.http.services || {};
+                yamlObj.http.services[name] = {
+                    loadBalancer: {
+                        servers: [{ url: document.getElementById("service-url").value }]
+                    }
+                };
+            } else if (editingType === "middleware") {
+                yamlObj.http = yamlObj.http || {};
+                yamlObj.http.middlewares = yamlObj.http.middlewares || {};
+                yamlObj.http.middlewares[name] = {
+                    type: document.getElementById("middleware-type").value
+                };
+            }
+        
+            editor.setValue(jsyaml.dump(yamlObj));
+            toggleSidebar();
+            populateTables();
+        }
+        async function saveConfig() {
+            const yamlContent = editor.getValue();
+            try {
+                const response = await fetch('/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ yaml: yamlContent })
+                });
+        
+                if (!response.ok) {
+                    throw new Error("Failed to save config");
+                }
+                alert("Configuration saved successfully!");
+                loadConfig(); // Reload the config after saving
+            } catch (error) {
+                console.error("Error saving YAML:", error);
+                alert("Error saving configuration.");
+            }
+        }
+        
+        
+        function populateTables() {
+            let yamlObj;
+            try {
+                yamlObj = jsyaml.load(editor.getValue()) || {};
+            } catch (error) {
+                console.error("Error parsing YAML:", error);
+                return;
+            }
+        
+            let routers = yamlObj?.http?.routers || {};
+            let services = yamlObj?.http?.services || {};
+            let middlewares = yamlObj?.http?.middlewares || {};
+        
+            document.getElementById("routers-table").innerHTML = Object.keys(routers).map(name => `
+                <tr>
+                    <td>${name}</td>
+                    <td>${routers[name]?.rule || ''}</td>
+                    <td>${(routers[name]?.entrypoints || []).join(', ')}</td>
+                    <td>${routers[name]?.service || ''}</td>
+                    <td>${(routers[name]?.middlewares || []).join(', ')}</td>
+                </tr>
+            `).join('');
+        
+            document.getElementById("services-table").innerHTML = Object.keys(services).map(name => {
+                let servers = (services[name]?.loadBalancer?.servers || []).map(s => s.url).join(', ');
+                return `<tr><td>${name}</td><td>${servers}</td></tr>`;
+            }).join('');
+        
+            document.getElementById("middlewares-table").innerHTML = Object.keys(middlewares).map(name => `
+                <tr>
+                    <td>${name}</td>
+                    <td>${Object.keys(middlewares[name] || {}).join(', ')}</td>
+                </tr>
+            `).join('');
+        }
+        function formatTimestamp(backupName) {
+            // Extract timestamp from backup filename (assuming "dynamic-YYYYMMDDHHMMSS.yml")
+            const match = backupName.match(/(\d{14})/);
+            if (!match) return "Unknown Date";
+        
+            const rawTimestamp = match[1];
+            const year = rawTimestamp.substring(0, 4);
+            const month = rawTimestamp.substring(4, 6);
+            const day = rawTimestamp.substring(6, 8);
+            const hours = rawTimestamp.substring(8, 10);
+            const minutes = rawTimestamp.substring(10, 12);
+            const seconds = rawTimestamp.substring(12, 14);
+        
+            return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        }
+
+        async function loadBackups() {
+            try {
+                const response = await fetch('/backups');
+                if (!response.ok) {
+                    console.error("Failed to fetch backups:", response.statusText);
+                    return;
+                }
+                const data = await response.json();
+                const backupList = document.getElementById("backup-list");
+                backupList.innerHTML = data.backups.map(backup => `
+                    <li>
+                        ${formatTimestamp(backup)} - ${backup} 
+                        <button onclick="restoreBackup('${backup}')">Restore</button>
+                    </li>
+                `).join('');
+            } catch (error) {
+                console.error("Error loading backups:", error);
+            }
+        }
+
+        async function restoreBackup(backupName) {
+            try {
+                const response = await fetch('/revert', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ backup_name: backupName })
+                });
+                if (!response.ok) {
+                    console.error("Failed to restore backup:", response.statusText);
+                    return;
+                }
+                alert("Backup restored successfully!");
+                loadConfig(); // Reload the YAML after restoring a backup
+            } catch (error) {
+                console.error("Error restoring backup:", error);
+            }
+        }
+
+        initializeEditor();
+
+        document.getElementById("add-router").addEventListener("click", () => toggleSidebar('router'));
+        document.getElementById("add-service").addEventListener("click", () => toggleSidebar('service'));
+        document.getElementById("add-middleware").addEventListener("click", () => toggleSidebar('middleware'));
+        document.getElementById("toggle-dark-mode").addEventListener("click", toggleDarkMode);
+        document.getElementById("save-config").addEventListener("click", saveConfig);
+
+    </script>
+</body>
+</html>
